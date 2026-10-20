@@ -114,6 +114,9 @@ public final class SearchController: ObservableObject {
 
     // Configuration
     @Published public var targetInputs: [String] = ["1Neo"]
+    @Published public var keyMinimumHex: String = "1"
+    @Published public var keyMaximumHex: String = U256.subb(Fn.n, .one).0.hexString
+    @Published public var keyStepText: String = "1"
     @Published public var forcedKind: AddressKind? = nil
     @Published public var caseSensitive: Bool = true
     @Published public var searchUncompressed: Bool = false
@@ -146,6 +149,7 @@ public final class SearchController: ObservableObject {
     @Published public private(set) var log: [LogLine] = []
     @Published public private(set) var parsedTargets: [SearchTarget] = []
     @Published public private(set) var parseError: String? = nil
+    @Published public var keyRangeError: String? = nil
     @Published public private(set) var thermalState: ProcessInfo.ThermalState = .nominal
     @Published public private(set) var gpuSelfTestPassed: Bool? = nil
 
@@ -173,10 +177,11 @@ public final class SearchController: ObservableObject {
             }
         SessionLog.start()
         refreshTargets()
+        do { _ = try currentKeyRange() } catch { keyRangeError = error.localizedDescription }
         results = ResultStore.load()
         note("VanityMetal online. \(devices.count) Metal device\(devices.count == 1 ? "" : "s") detected.", .info)
         for d in devices { note("· \(d.name) — \(d.summary)", .info) }
-        if devices.isEmpty { note("No GPU found; the CPU engine will be used.", .warn) }
+        if devices.isEmpty { note("No GPU found; GPU-only search is unavailable.", .warn) }
     }
 
     deinit {
@@ -246,6 +251,15 @@ public final class SearchController: ObservableObject {
         guard state == .idle else { return }
 
         refreshTargets()
+        let keyRange: KeySearchRange
+        do {
+            keyRange = try currentKeyRange()
+            keyRangeError = nil
+        } catch {
+            keyRangeError = error.localizedDescription
+            note(error.localizedDescription, .bad)
+            return
+        }
         guard !parsedTargets.isEmpty else {
             note(parseError ?? "Nothing to search for — add a valid prefix first.", .bad)
             return
@@ -265,20 +279,22 @@ public final class SearchController: ObservableObject {
         state = .preparing
 
         let ranges = parsedTargets.flatMap(\.ranges)
-        let mode = engineMode
         let deviceID = selectedDeviceID
         let gpuThreads = gpuThreadCount
-        let cpuThreads = cpuThreadCount
 
         let t = Thread { [weak self] in
-            self?.runLoop(ranges: ranges, mode: mode, deviceID: deviceID,
-                          gpuThreads: gpuThreads, cpuThreads: cpuThreads)
+            self?.runLoop(ranges: ranges, keyRange: keyRange, deviceID: deviceID,
+                          gpuThreads: gpuThreads)
         }
         t.name = "VanityMetal.search"
         t.qualityOfService = .userInitiated
         t.stackSize = 8 << 20
         worker = t
         t.start()
+    }
+
+    public func currentKeyRange() throws -> KeySearchRange {
+        try KeySearchRange.parse(minimum: keyMinimumHex, maximum: keyMaximumHex, step: keyStepText)
     }
 
     public func pause() {
@@ -371,12 +387,13 @@ public final class SearchController: ObservableObject {
         state = .preparing
         note("Benchmarking for \(Int(seconds))s — thermal guard off, no targets.", .info)
 
-        let mode = engineMode, deviceID = selectedDeviceID
-        let gpuThreads = gpuThreadCount, cpuThreads = cpuThreadCount
+        let deviceID = selectedDeviceID
+        let gpuThreads = gpuThreadCount
         let t = Thread { [weak self] in
             guard let engine = self else { return }
-            engine.runLoop(ranges: [range], mode: mode, deviceID: deviceID,
-                           gpuThreads: gpuThreads, cpuThreads: cpuThreads)
+            let keyRange = try! KeySearchRange(minimum: .one, maximum: U256.subb(Fn.n, .one).0, step: 1)
+            engine.runLoop(ranges: [range], keyRange: keyRange, deviceID: deviceID,
+                           gpuThreads: gpuThreads)
             engine.post { c in
                 c.flags.deadline = nil
                 c.flags.thermalGuard = c.thermalGuard
@@ -393,13 +410,11 @@ public final class SearchController: ObservableObject {
 
     // MARK: The loop (runs off the main thread)
 
-    private func runLoop(ranges: [HashRange], mode: EngineMode, deviceID: UInt64?,
-                         gpuThreads: Int, cpuThreads: Int) {
+    private func runLoop(ranges: [HashRange], keyRange: KeySearchRange, deviceID: UInt64?,
+                         gpuThreads: Int) {
         var metalEngine: MetalEngine?
-        var cpuEngine: CPUEngine?
 
-        if mode == .gpu || mode == .both {
-            if let dev = MetalEngine.device(matching: deviceID) {
+        if let dev = MetalEngine.device(matching: deviceID) {
                 post { $0.note("Compiling Metal kernels for \(dev.name)…", .info) }
                 do {
                     let e = try MetalEngine(device: dev)
@@ -410,7 +425,7 @@ public final class SearchController: ObservableObject {
                         $0.activeDeviceName = dev.name
                     }
                     let threads = gpuThreads > 0 ? gpuThreads : e.suggestedThreadCount
-                    try e.prepare(targets: ranges, threadCount: threads)
+                    try e.prepare(targets: ranges, threadCount: threads, keyRange: keyRange)
                     let actual = e.threadCount
                     post {
                         $0.activeWalkers = actual
@@ -423,31 +438,18 @@ public final class SearchController: ObservableObject {
                         $0.note(error.localizedDescription, .bad)
                     }
                 }
-            } else {
-                post { $0.note("No Metal device available.", .bad) }
-            }
+        } else {
+            post { $0.note("No Metal device available.", .bad) }
         }
 
-        if mode == .cpu || mode == .both || metalEngine == nil {
-            let e = CPUEngine()
-            let threads = cpuThreads > 0 ? cpuThreads : e.suggestedThreadCount
-            e.prepare(targets: ranges, threadCount: threads)
-            cpuEngine = e
-            post { $0.note("CPU engine armed: \(threads) worker\(threads == 1 ? "" : "s").", .info) }
-            if metalEngine == nil {
-                post { $0.activeDeviceName = "CPU"; $0.activeWalkers = threads }
-            }
-        }
-
-        guard metalEngine != nil || cpuEngine != nil else {
-            post { $0.note("No engine could be started.", .bad); $0.state = .idle }
+        guard metalEngine != nil else {
+            post { $0.note("GPU engine could not be started; GPU-only mode does not fall back to CPU.", .bad); $0.state = .idle }
             return
         }
 
         post { $0.state = .running }
-        SessionLog.write("run loop entered; gpu=\(metalEngine != nil) cpu=\(cpuEngine != nil)")
+        SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString)")
 
-        var cpuIterations = 1       // the GPU sizes itself; the CPU is tuned here
         var dispatchCount = 0
         var totalScanned: UInt64 = 0
         let started = Date()
@@ -494,28 +496,12 @@ public final class SearchController: ObservableObject {
                     scanned &+= r.keysScanned
                     verify(r.hits, engine: .metal(e), totalScanned: totalScanned &+ scanned)
                 } catch {
-                    post { $0.note("GPU dispatch failed: \(error.localizedDescription). Falling back to CPU.", .bad) }
+                    post { $0.note("GPU dispatch failed: \(error.localizedDescription).", .bad) }
                     metalEngine = nil
-                    if cpuEngine == nil {
-                        let e2 = CPUEngine()
-                        let threads = cpuThreads > 0 ? cpuThreads : e2.suggestedThreadCount
-                        e2.prepare(targets: ranges, threadCount: threads)
-                        cpuEngine = e2
-                        post { $0.activeDeviceName = "CPU"; $0.activeWalkers = threads }
-                    }
+                    flags.stop = true
                 }
             }
-            if let e = cpuEngine, metalEngine == nil || mode == .both {
-                let cpuStart = Date()
-                let r = e.run(iterations: cpuIterations)
-                scanned &+= r.keysScanned
-                verify(r.hits, engine: .cpu(e), totalScanned: totalScanned &+ scanned)
-                let dt = Date().timeIntervalSince(cpuStart)
-                if dt > 0 {
-                    let scale = min(max(0.15 / max(dt, 0.001), 0.5), 2.0)
-                    cpuIterations = max(1, min(4096, Int((Double(cpuIterations) * scale).rounded())))
-                }
-            }
+            if let e = metalEngine, e.isExhausted { flags.stop = true }
 
             totalScanned &+= scanned
             scannedSinceTick &+= scanned
@@ -553,10 +539,7 @@ public final class SearchController: ObservableObject {
         }
     }
 
-    private enum EngineRef {
-        case metal(MetalEngine)
-        case cpu(CPUEngine)
-    }
+    private enum EngineRef { case metal(MetalEngine) }
 
     /// Every reported hit is re-derived from scratch and the address rebuilt
     /// and string-compared. Nothing reaches the UI unverified — a bug in the
@@ -567,7 +550,6 @@ public final class SearchController: ObservableObject {
             let key: U256?
             switch engine {
             case .metal(let e): key = e.privateKey(for: hit)
-            case .cpu(let e):   key = e.privateKey(for: hit)
             }
             guard let key, !key.isZero else {
                 post { $0.note("A hit could not be traced back to a key — ignored.", .warn) }

@@ -38,7 +38,7 @@ rebuilt on the CPU before it appears.*
 | **Xcode Command Line Tools** | building | `xcode-select --install` · ~2 GB |
 | **Swift 5.7+** | building | Ships with Command Line Tools 14+ / Xcode 14+ |
 | **~600 MB free disk** | building | `.build` reaches ~578 MB; the app itself is 3 MB |
-| **A Metal-capable GPU** | the fast path | Optional — the CPU engine runs without one |
+| **A Metal-capable GPU** | searching | Required for key-range searches; hits are verified on the CPU |
 | **Full Xcode** | `swift test` only | **Not required.** `./build.sh --test` covers the same ground |
 
 No Homebrew, no CUDA, no package manager, no Swift dependencies. Apple silicon
@@ -85,8 +85,9 @@ Full walkthrough — Gatekeeper, verification, updating, and how to uninstall
 Type a prefix and the app works out which kind it is. Several prefixes can be
 hunted at once, and the combined difficulty updates as you type.
 
-Everything else lives in the control panel: GPU device picker, walker count,
-CPU worker count, steps per dispatch, case sensitivity, uncompressed-key
+Everything else lives in the control panel: inclusive minimum and maximum
+private keys, key increment, GPU device picker, walker count, steps per
+dispatch, case sensitivity, uncompressed-key
 search, thermal guard, stop-on-first-hit, auto-save, a live hashrate trace, a
 probability meter, an on-demand benchmark, an on-demand GPU self-test, and a
 backdrop you can dial down or switch off when you would rather spend the
@@ -123,7 +124,7 @@ throughput; it cannot hand you a key that does not work.
 On top of that, the shader carries known-answer tests for field addition, the
 modular-inverse addition chain, SHA-256, RIPEMD-160 and Keccak-256. They run on
 the GPU at launch, and if the GPU disagrees with the reference values the app
-says so and falls back to the multi-core CPU engine automatically.
+reports the failure and does not start the GPU-only search.
 
 ---
 
@@ -194,7 +195,7 @@ Sources/VanityMetalCore/
     Encoding.swift                Base58Check, Bech32, WIF, EIP-55
     AddressTarget.swift           prefix → exact hash ranges + true difficulty
     MetalEngine.swift             device management, buffers, dispatch, self-test
-    CPUEngine.swift               same algorithm on CPU cores (fallback / quiet mode)
+    CPUEngine.swift               CPU reference used by verification tooling
     SearchController.swift        run loop, verification, statistics
     Persistence.swift             crash-safe result storage and export
     MetalShaderSource.swift       generated — embeds the .metal file
@@ -233,15 +234,13 @@ Anything this app finds is a real private key.
   cannot lose one.
 - Private material is masked in the interface until you press **REVEAL**.
 - Exports (text, CSV or JSON) are written `0600` too.
-- Every start-up draws a fresh 256-bit random base key from the system CSPRNG,
-  and each walker is spaced 2¹²⁸ keys apart, so two walkers can never collide
-  and no run repeats a previous one.
+- Search keys are generated only from the configured inclusive interval and
+  increment. GPU walkers partition that sequence without overlap; the final
+  dispatch masks candidates beyond its end.
 
-A vanity address is exactly as secure as any other address **provided you
-generated it yourself and control the key**. Never accept a vanity private key
-from someone else, and never paste a private key into a website to "check" it.
-Move funds to a newly generated vanity address only once you are satisfied with
-how you are storing its key.
+Treat every found key as sensitive wallet material. Never paste a private key
+into a website to check it; verify addresses locally and store any key you
+intend to use securely.
 
 ---
 

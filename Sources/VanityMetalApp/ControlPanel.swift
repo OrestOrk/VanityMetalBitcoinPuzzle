@@ -22,7 +22,7 @@ struct TargetsCard: View {
                 }
 
                 HStack(spacing: 7) {
-                    TextField("add a prefix…", text: $newTarget)
+                    TextField("address or prefix…", text: $newTarget)
                         .textFieldStyle(.plain)
                         .font(Neon.mono(12))
                         .foregroundColor(Neon.text)
@@ -94,6 +94,46 @@ struct TargetsCard: View {
     }
 }
 
+struct KeyRangeCard: View {
+    @ObservedObject var c: SearchController
+
+    var body: some View {
+        Card(title: "Private key range", accent: Neon.amber, systemImage: "arrow.left.and.right") {
+            VStack(alignment: .leading, spacing: 9) {
+                rangeField("Minimum key (hex)", text: $c.keyMinimumHex)
+                rangeField("Maximum key (hex)", text: $c.keyMaximumHex)
+                rangeField("Step (decimal or 0x hex)", text: $c.keyStepText)
+                if let error = c.keyRangeError {
+                    Text(error).font(Neon.mono(9)).foregroundColor(Neon.rose)
+                } else {
+                    Text("Inclusive bounds. Checks min, min + step, and so on up to max.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func rangeField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel(text: title)
+            TextField(title, text: text)
+                .textFieldStyle(.plain)
+                .font(Neon.mono(10))
+                .foregroundColor(Neon.text)
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
+                .disabled(c.state != .idle)
+                .onChange(of: text.wrappedValue) { _ in
+                    do { _ = try c.currentKeyRange(); c.keyRangeError = nil }
+                    catch { c.keyRangeError = error.localizedDescription }
+                }
+        }
+    }
+}
+
 private struct TargetRow: View {
     @ObservedObject var c: SearchController
     let index: Int
@@ -106,7 +146,7 @@ private struct TargetRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 7) {
-                TextField("prefix", text: Binding(
+                TextField("address or prefix", text: Binding(
                     get: { index < c.targetInputs.count ? c.targetInputs[index] : "" },
                     set: { if index < c.targetInputs.count { c.targetInputs[index] = $0; c.refreshTargets() } }))
                     .textFieldStyle(.plain)
@@ -185,12 +225,8 @@ struct EngineCard: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     SectionLabel(text: "Compute")
-                    Picker("", selection: $c.engineMode) {
-                        ForEach(EngineMode.allCases) { m in Text(m.title).tag(m) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .disabled(c.state != .idle)
+                    Text("GPU only")
+                        .font(Neon.mono(11, .semibold)).foregroundColor(Neon.cyan)
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -218,14 +254,6 @@ struct EngineCard: View {
                            format: { $0 == 0 ? "AUTO" : "\(Int($0))" },
                            value: Binding(get: { Double(c.gpuThreadCount) },
                                           set: { c.gpuThreadCount = Int($0) }))
-                    .disabled(c.state != .idle)
-
-                NeonSlider(label: "CPU workers",
-                           range: 0...Double(ProcessInfo.processInfo.activeProcessorCount), step: 1,
-                           accent: Neon.violet,
-                           format: { $0 == 0 ? "AUTO" : "\(Int($0))" },
-                           value: Binding(get: { Double(c.cpuThreadCount) },
-                                          set: { c.cpuThreadCount = Int($0) }))
                     .disabled(c.state != .idle)
 
                 NeonSlider(label: "Dispatch window",

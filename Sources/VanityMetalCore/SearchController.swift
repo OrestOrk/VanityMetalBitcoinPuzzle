@@ -114,6 +114,7 @@ public final class SearchController: ObservableObject {
 
     // Configuration
     @Published public var targetInputs: [String] = ["1Neo"]
+    @Published public private(set) var selectedBitcoinPuzzleID: Int? = nil
     @Published public var keyMinimumHex: String = "1"
     @Published public var keyMaximumHex: String = U256.subb(Fn.n, .one).0.hexString
     @Published public var keyMinimumStepText: String = "1"
@@ -213,6 +214,23 @@ public final class SearchController: ObservableObject {
         }
         parsedTargets = parsed
         parseError = firstError
+    }
+
+    public var bitcoinPuzzles: [BitcoinPuzzle] { BitcoinPuzzleCatalog.puzzles }
+
+    public func selectBitcoinPuzzle(_ puzzleID: Int?) {
+        selectedBitcoinPuzzleID = puzzleID
+        guard let puzzleID,
+              let puzzle = BitcoinPuzzleCatalog.puzzles.first(where: { $0.number == puzzleID }) else {
+            return
+        }
+        targetInputs = [puzzle.address]
+        keyMinimumHex = puzzle.minimumKeyHex
+        keyMaximumHex = puzzle.maximumKeyHex
+        forcedKind = nil
+        keyRangeError = nil
+        refreshTargets()
+        note("Loaded Bitcoin Puzzle #\(puzzle.number) (catalog status: \(puzzle.status)).", .info)
     }
 
     /// Combined difficulty when several prefixes are hunted at once.

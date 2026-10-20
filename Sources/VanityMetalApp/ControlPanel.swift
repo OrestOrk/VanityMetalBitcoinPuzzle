@@ -17,6 +17,27 @@ struct TargetsCard: View {
              trailing: AnyView(Pill(text: "\(c.parsedTargets.count) ACTIVE", accent: Neon.magenta))) {
             VStack(alignment: .leading, spacing: 11) {
 
+                VStack(alignment: .leading, spacing: 5) {
+                    SectionLabel(text: "BITCOIN PUZZLE PRESET")
+                    Picker("Bitcoin Puzzle", selection: Binding(
+                        get: { c.selectedBitcoinPuzzleID },
+                        set: { c.selectBitcoinPuzzle($0) })) {
+                        Text("Manual target / range").tag(Int?.none)
+                        ForEach(c.bitcoinPuzzles) { puzzle in
+                            Text("#\(puzzle.number) · \(puzzle.status.capitalized)")
+                                .tag(Int?.some(puzzle.number))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .font(Neon.mono(11))
+                    .tint(Neon.magenta)
+                    .disabled(c.state != .idle || c.bitcoinPuzzles.isEmpty)
+                    Text("Loads the published address and inclusive hex key range. Status is from the bundled catalog snapshot.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 ForEach(Array(c.targetInputs.enumerated()), id: \.offset) { pair in
                     TargetRow(c: c, index: pair.offset)
                 }
@@ -88,6 +109,7 @@ struct TargetsCard: View {
     private func addTarget() {
         let t = newTarget.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
+        c.selectBitcoinPuzzle(nil)
         c.targetInputs.append(t)
         newTarget = ""
         c.refreshTargets()
@@ -149,7 +171,13 @@ private struct TargetRow: View {
             HStack(spacing: 7) {
                 TextField("address or prefix", text: Binding(
                     get: { index < c.targetInputs.count ? c.targetInputs[index] : "" },
-                    set: { if index < c.targetInputs.count { c.targetInputs[index] = $0; c.refreshTargets() } }))
+                    set: {
+                        if index < c.targetInputs.count {
+                            c.selectBitcoinPuzzle(nil)
+                            c.targetInputs[index] = $0
+                            c.refreshTargets()
+                        }
+                    }))
                     .textFieldStyle(.plain)
                     .font(Neon.mono(12.5, .semibold))
                     .foregroundColor(parsed == nil ? Neon.rose : Neon.lime)
@@ -160,6 +188,7 @@ private struct TargetRow: View {
 
                 Button {
                     guard index < c.targetInputs.count else { return }
+                    c.selectBitcoinPuzzle(nil)
                     c.targetInputs.remove(at: index)
                     c.refreshTargets()
                 } label: {

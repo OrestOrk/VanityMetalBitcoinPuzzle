@@ -86,12 +86,17 @@ Type a prefix and the app works out which kind it is. Several prefixes can be
 hunted at once, and the combined difficulty updates as you type.
 
 Everything else lives in the control panel: inclusive minimum and maximum
-private keys, key increment, GPU device picker, walker count, steps per
+private keys, fixed or randomized key increment, GPU device picker, walker count, steps per
 dispatch, case sensitivity, uncompressed-key
 search, thermal guard, stop-on-first-hit, auto-save, a live hashrate trace, a
 probability meter, an on-demand benchmark, an on-demand GPU self-test, and a
 backdrop you can dial down or switch off when you would rather spend the
 cycles on the search.
+
+The target panel also includes presets for Bitcoin Puzzle #1–#160. Choosing a
+puzzle fills in its published P2PKH address and inclusive hexadecimal key
+bounds. Preset statuses come from a dated catalog snapshot; see
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for its source and licence.
 
 ---
 

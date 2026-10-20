@@ -119,6 +119,7 @@ public final class SearchController: ObservableObject {
     @Published public var keyMaximumHex: String = U256.subb(Fn.n, .one).0.hexString
     @Published public var keyMinimumStepText: String = "1"
     @Published public var keyMaximumStepText: String = "1"
+    @Published public var puzzleChunkSizeText: String = "100000000"
     @Published public var forcedKind: AddressKind? = nil
     @Published public var caseSensitive: Bool = true
     @Published public var searchUncompressed: Bool = false
@@ -152,6 +153,8 @@ public final class SearchController: ObservableObject {
     @Published public private(set) var parsedTargets: [SearchTarget] = []
     @Published public private(set) var parseError: String? = nil
     @Published public var keyRangeError: String? = nil
+    @Published public private(set) var puzzleProgressText: String? = nil
+    @Published public private(set) var puzzleChunkProgress: Double = 0
     @Published public private(set) var thermalState: ProcessInfo.ThermalState = .nominal
     @Published public private(set) var gpuSelfTestPassed: Bool? = nil
 
@@ -227,10 +230,33 @@ public final class SearchController: ObservableObject {
         targetInputs = [puzzle.address]
         keyMinimumHex = puzzle.minimumKeyHex
         keyMaximumHex = puzzle.maximumKeyHex
+        keyMinimumStepText = "1"
+        keyMaximumStepText = "1"
         forcedKind = nil
         keyRangeError = nil
+        let progress = try? PuzzleChunkCoordinator(
+            puzzleID: puzzleID,
+            minimum: U256(hex: puzzle.minimumKeyHex)!,
+            maximum: U256(hex: puzzle.maximumKeyHex)!,
+            chunkSize: currentPuzzleChunkSize())
+        puzzleProgressText = progress?.progressSummary
+        puzzleChunkProgress = progress?.activeChunkProgress ?? 0
         refreshTargets()
         note("Loaded Bitcoin Puzzle #\(puzzle.number) (catalog status: \(puzzle.status)).", .info)
+    }
+
+    public func currentPuzzleChunkSize() throws -> UInt64 {
+        let text = puzzleChunkSizeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let size = UInt64(text), size > 0 else { throw PuzzleChunkError.invalidConfiguration }
+        return size
+    }
+
+    public func resetSelectedPuzzleProgress() {
+        guard let puzzleID = selectedBitcoinPuzzleID else { return }
+        PuzzleChunkCoordinator.resetProgress(puzzleID: puzzleID)
+        puzzleProgressText = "No saved progress"
+        puzzleChunkProgress = 0
+        note("Saved chunks for Bitcoin Puzzle #\(puzzleID) were reset.", .warn)
     }
 
     /// Combined difficulty when several prefixes are hunted at once.
@@ -271,8 +297,11 @@ public final class SearchController: ObservableObject {
 
         refreshTargets()
         let keyRange: KeySearchRange
+        let puzzleID = selectedBitcoinPuzzleID
+        let chunkSize: UInt64?
         do {
             keyRange = try currentKeyRange()
+            chunkSize = puzzleID == nil ? nil : try currentPuzzleChunkSize()
             keyRangeError = nil
         } catch {
             keyRangeError = error.localizedDescription
@@ -303,7 +332,8 @@ public final class SearchController: ObservableObject {
 
         let t = Thread { [weak self] in
             self?.runLoop(ranges: ranges, keyRange: keyRange, deviceID: deviceID,
-                          gpuThreads: gpuThreads)
+                          gpuThreads: gpuThreads, puzzleID: puzzleID,
+                          chunkSize: chunkSize)
         }
         t.name = "VanityMetal.search"
         t.qualityOfService = .userInitiated
@@ -432,8 +462,9 @@ public final class SearchController: ObservableObject {
     // MARK: The loop (runs off the main thread)
 
     private func runLoop(ranges: [HashRange], keyRange: KeySearchRange, deviceID: UInt64?,
-                         gpuThreads: Int) {
+                         gpuThreads: Int, puzzleID: Int? = nil, chunkSize: UInt64? = nil) {
         var metalEngine: MetalEngine?
+        var chunkCoordinator: PuzzleChunkCoordinator?
 
         if let dev = MetalEngine.device(matching: deviceID) {
                 post { $0.note("Compiling Metal kernels for \(dev.name)…", .info) }
@@ -446,7 +477,30 @@ public final class SearchController: ObservableObject {
                         $0.activeDeviceName = dev.name
                     }
                     let threads = gpuThreads > 0 ? gpuThreads : e.suggestedThreadCount
-                    try e.prepare(targets: ranges, threadCount: threads, keyRange: keyRange)
+                    let initialRange: KeySearchRange
+                    if let puzzleID, let chunkSize {
+                        let coordinator = try PuzzleChunkCoordinator(
+                            puzzleID: puzzleID, minimum: keyRange.minimum,
+                            maximum: keyRange.maximum, chunkSize: chunkSize)
+                        guard let firstChunk = try coordinator.nextRange() else {
+                            post {
+                                $0.puzzleProgressText = coordinator.progressSummary
+                                $0.puzzleChunkProgress = coordinator.activeChunkProgress
+                                $0.note("All chunks for Bitcoin Puzzle #\(puzzleID) are complete.", .good)
+                                $0.state = .idle
+                            }
+                            return
+                        }
+                        chunkCoordinator = coordinator
+                        initialRange = firstChunk
+                        post {
+                            $0.puzzleProgressText = coordinator.progressSummary
+                            $0.puzzleChunkProgress = coordinator.activeChunkProgress
+                        }
+                    } else {
+                        initialRange = keyRange
+                    }
+                    try e.prepare(targets: ranges, threadCount: threads, keyRange: initialRange)
                     let actual = e.threadCount
                     post {
                         $0.activeWalkers = actual
@@ -470,8 +524,13 @@ public final class SearchController: ObservableObject {
 
         post { $0.state = .running }
         var activeKeyRange = keyRange
-        SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString); step=\(keyRange.step)")
-        post { $0.note("First cycle selected step \(keyRange.step).", .info) }
+        if let chunkCoordinator {
+            SessionLog.write("Puzzle #\(chunkCoordinator.puzzleID) chunk scan: size=\(chunkCoordinator.chunkSize), \(chunkCoordinator.progressSummary)")
+            post { $0.note("Puzzle #\(chunkCoordinator.puzzleID): resuming random chunk scan (\(chunkCoordinator.progressSummary)).", .info) }
+        } else {
+            SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString); step=\(keyRange.step)")
+            post { $0.note("First cycle selected step \(keyRange.step).", .info) }
+        }
 
         var dispatchCount = 0
         var totalScanned: UInt64 = 0
@@ -524,7 +583,33 @@ public final class SearchController: ObservableObject {
                     flags.stop = true
                 }
             }
-            if let e = metalEngine, e.isExhausted, !flags.stop {
+            if let e = metalEngine, let coordinator = chunkCoordinator {
+                do {
+                    _ = try coordinator.recordScanned(scanned)
+                    let progress = coordinator.progressSummary
+                    let chunkProgress = coordinator.activeChunkProgress
+                    post {
+                        $0.puzzleProgressText = progress
+                        $0.puzzleChunkProgress = chunkProgress
+                    }
+                    if e.isExhausted, !flags.stop {
+                        if let nextChunk = try coordinator.nextRange() {
+                            try e.prepare(targets: ranges, threadCount: e.threadCount,
+                                          keyRange: nextChunk)
+                            SessionLog.write("Puzzle #\(coordinator.puzzleID): started another random chunk; \(progress)")
+                            post { $0.note("Chunk complete. Selected another random uncompleted chunk. \(progress)", .info) }
+                        } else {
+                            flags.stop = true
+                            post {
+                                $0.note("All chunks for Bitcoin Puzzle #\(coordinator.puzzleID) are complete.", .good)
+                            }
+                        }
+                    }
+                } catch {
+                    post { $0.note("Puzzle progress could not be saved: \(error.localizedDescription).", .bad) }
+                    flags.stop = true
+                }
+            } else if let e = metalEngine, e.isExhausted, !flags.stop {
                 let nextRange = activeKeyRange.nextCycle()
                 do {
                     try e.prepare(targets: ranges, threadCount: e.threadCount,

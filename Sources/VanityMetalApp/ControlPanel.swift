@@ -122,22 +122,64 @@ struct KeyRangeCard: View {
     var body: some View {
         Card(title: "Private key range", accent: Neon.amber, systemImage: "arrow.left.and.right") {
             VStack(alignment: .leading, spacing: 9) {
-                rangeField("Minimum key (hex)", text: $c.keyMinimumHex)
-                rangeField("Maximum key (hex)", text: $c.keyMaximumHex)
-                rangeField("Minimum step", text: $c.keyMinimumStepText)
-                rangeField("Maximum step", text: $c.keyMaximumStepText)
-                if let error = c.keyRangeError {
-                    Text(error).font(Neon.mono(9)).foregroundColor(Neon.rose)
+                rangeField("Minimum key (hex)", text: $c.keyMinimumHex,
+                           disabled: c.selectedBitcoinPuzzleID != nil)
+                rangeField("Maximum key (hex)", text: $c.keyMaximumHex,
+                           disabled: c.selectedBitcoinPuzzleID != nil)
+                if c.selectedBitcoinPuzzleID != nil {
+                    chunkSizeField
+                    Text("GPU checks every key in each chunk (step 1). Chunks are picked randomly and progress is saved after each dispatch.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let progress = c.puzzleProgressText {
+                        Text(progress).font(Neon.mono(9)).foregroundColor(Neon.lime)
+                    }
+                    HStack(spacing: 7) {
+                        Text("CURRENT CHUNK")
+                            .font(Neon.mono(8)).foregroundColor(Neon.textFaint)
+                        Spacer(minLength: 4)
+                        Text("\(Int(c.puzzleChunkProgress * 100))%")
+                            .font(Neon.mono(9, .semibold)).foregroundColor(Neon.lime)
+                    }
+                    ProgressView(value: c.puzzleChunkProgress)
+                        .tint(Neon.lime)
+                    Button("Reset saved puzzle progress") { c.resetSelectedPuzzleProgress() }
+                        .buttonStyle(NeonButtonStyle(accent: Neon.rose, compact: true))
+                        .disabled(c.state != .idle)
                 } else {
+                    rangeField("Minimum step", text: $c.keyMinimumStepText)
+                    rangeField("Maximum step", text: $c.keyMaximumStepText)
                     Text("Each pass starts at min, uses one random step in the limits above, and stops at max. Then it returns to min and chooses a new step.")
                         .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = c.keyRangeError {
+                    Text(error).font(Neon.mono(9)).foregroundColor(Neon.rose)
                 }
             }
         }
     }
 
-    private func rangeField(_ title: String, text: Binding<String>) -> some View {
+    private var chunkSizeField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel(text: "Chunk size (keys, decimal)")
+            TextField("100000000", text: $c.puzzleChunkSizeText)
+                .textFieldStyle(.plain)
+                .font(Neon.mono(10))
+                .foregroundColor(Neon.text)
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
+                .disabled(c.state != .idle)
+                .onChange(of: c.puzzleChunkSizeText) { _ in
+                    do { _ = try c.currentPuzzleChunkSize(); c.keyRangeError = nil }
+                    catch { c.keyRangeError = error.localizedDescription }
+                }
+        }
+    }
+
+    private func rangeField(_ title: String, text: Binding<String>, disabled: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             SectionLabel(text: title)
             TextField(title, text: text)
@@ -148,7 +190,7 @@ struct KeyRangeCard: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
-                .disabled(c.state != .idle)
+                .disabled(c.state != .idle || disabled)
                 .onChange(of: text.wrappedValue) { _ in
                     do { _ = try c.currentKeyRange(); c.keyRangeError = nil }
                     catch { c.keyRangeError = error.localizedDescription }

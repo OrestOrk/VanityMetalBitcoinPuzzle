@@ -95,7 +95,10 @@ cycles on the search.
 
 The target panel also includes presets for Bitcoin Puzzle #1–#160. Choosing a
 puzzle fills in its published P2PKH address and inclusive hexadecimal key
-bounds. Preset statuses come from a dated catalog snapshot; see
+bounds. Puzzle runs scan randomized, non-repeating chunks at a stride of one;
+the interface shows current-chunk progress, while completed chunks and the
+active chunk cursor are saved in Application Support.
+Preset statuses come from a dated catalog snapshot; see
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for its source and licence.
 
 ---

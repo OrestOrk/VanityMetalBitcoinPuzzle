@@ -116,7 +116,8 @@ public final class SearchController: ObservableObject {
     @Published public var targetInputs: [String] = ["1Neo"]
     @Published public var keyMinimumHex: String = "1"
     @Published public var keyMaximumHex: String = U256.subb(Fn.n, .one).0.hexString
-    @Published public var keyStepText: String = "1"
+    @Published public var keyMinimumStepText: String = "1"
+    @Published public var keyMaximumStepText: String = "1"
     @Published public var forcedKind: AddressKind? = nil
     @Published public var caseSensitive: Bool = true
     @Published public var searchUncompressed: Bool = false
@@ -294,7 +295,9 @@ public final class SearchController: ObservableObject {
     }
 
     public func currentKeyRange() throws -> KeySearchRange {
-        try KeySearchRange.parse(minimum: keyMinimumHex, maximum: keyMaximumHex, step: keyStepText)
+        try KeySearchRange.parse(minimum: keyMinimumHex, maximum: keyMaximumHex,
+                                 minimumStep: keyMinimumStepText,
+                                 maximumStep: keyMaximumStepText)
     }
 
     public func pause() {
@@ -448,7 +451,9 @@ public final class SearchController: ObservableObject {
         }
 
         post { $0.state = .running }
-        SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString)")
+        var activeKeyRange = keyRange
+        SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString); step=\(keyRange.step)")
+        post { $0.note("First cycle selected step \(keyRange.step).", .info) }
 
         var dispatchCount = 0
         var totalScanned: UInt64 = 0
@@ -501,7 +506,19 @@ public final class SearchController: ObservableObject {
                     flags.stop = true
                 }
             }
-            if let e = metalEngine, e.isExhausted { flags.stop = true }
+            if let e = metalEngine, e.isExhausted, !flags.stop {
+                let nextRange = activeKeyRange.nextCycle()
+                do {
+                    try e.prepare(targets: ranges, threadCount: e.threadCount,
+                                  keyRange: nextRange)
+                    activeKeyRange = nextRange
+                    SessionLog.write("Key range exhausted; restarting from minimum with step=\(nextRange.step)")
+                    post { $0.note("Range complete. Restarted at minimum with random step \(nextRange.step).", .info) }
+                } catch {
+                    post { $0.note("Could not restart key-range cycle: \(error.localizedDescription).", .bad) }
+                    flags.stop = true
+                }
+            }
 
             totalScanned &+= scanned
             scannedSinceTick &+= scanned

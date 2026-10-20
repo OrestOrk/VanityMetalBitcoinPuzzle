@@ -102,11 +102,12 @@ struct KeyRangeCard: View {
             VStack(alignment: .leading, spacing: 9) {
                 rangeField("Minimum key (hex)", text: $c.keyMinimumHex)
                 rangeField("Maximum key (hex)", text: $c.keyMaximumHex)
-                rangeField("Step (decimal or 0x hex)", text: $c.keyStepText)
+                rangeField("Minimum step", text: $c.keyMinimumStepText)
+                rangeField("Maximum step", text: $c.keyMaximumStepText)
                 if let error = c.keyRangeError {
                     Text(error).font(Neon.mono(9)).foregroundColor(Neon.rose)
                 } else {
-                    Text("Inclusive bounds. Checks min, min + step, and so on up to max.")
+                    Text("Each pass starts at min, uses one random step in the limits above, and stops at max. Then it returns to min and chooses a new step.")
                         .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
                 }

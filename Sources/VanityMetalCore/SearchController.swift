@@ -650,6 +650,11 @@ public final class SearchController: ObservableObject {
             }
         }
 
+        if let chunkCoordinator {
+            do { try chunkCoordinator.flushProgress() }
+            catch { post { $0.note("Final puzzle progress checkpoint failed: \(error.localizedDescription)", .bad) } }
+        }
+
         let total = totalScanned
         post {
             $0.keysScanned = total

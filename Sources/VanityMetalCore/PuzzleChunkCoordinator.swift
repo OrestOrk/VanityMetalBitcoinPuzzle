@@ -14,6 +14,15 @@ public final class PuzzleChunkCoordinator {
         let activeOffset: String
     }
 
+    private struct Cursor: Codable {
+        let puzzleID: Int
+        let minimumHex: String
+        let maximumHex: String
+        let chunkSize: UInt64
+        let activeIndex: String?
+        let activeOffset: String
+    }
+
     public let puzzleID: Int
     public let minimum: U256
     public let maximum: U256
@@ -24,6 +33,10 @@ public final class PuzzleChunkCoordinator {
     private var activeIndex: U256?
     private var activeOffset = U256.zero
     private let progressURL: URL
+    private let journalURL: URL
+    private let cursorURL: URL
+    private var lastCursorSave = Date.distantPast
+    private let checkpointInterval: TimeInterval = 30
 
     public init(puzzleID: Int, minimum: U256, maximum: U256,
                 chunkSize: UInt64) throws {
@@ -40,8 +53,17 @@ public final class PuzzleChunkCoordinator {
             : U256.addSmall(divided.quotient, 1).0
         self.totalChunks = chunks
         self.progressURL = Self.progressURL(puzzleID: puzzleID, chunkSize: chunkSize)
+        self.journalURL = Self.progressURL(puzzleID: puzzleID, chunkSize: chunkSize)
+            .deletingPathExtension().appendingPathExtension("completed")
+        self.cursorURL = Self.progressURL(puzzleID: puzzleID, chunkSize: chunkSize)
+            .deletingPathExtension().appendingPathExtension("cursor.json")
 
-        if FileManager.default.fileExists(atPath: progressURL.path) {
+        let hasNewProgress = FileManager.default.fileExists(atPath: journalURL.path)
+            || FileManager.default.fileExists(atPath: cursorURL.path)
+        if hasNewProgress {
+            try loadJournal()
+            try loadCursor()
+        } else if FileManager.default.fileExists(atPath: progressURL.path) {
             guard let data = try? Data(contentsOf: progressURL),
                   let saved = try? JSONDecoder().decode(Snapshot.self, from: data),
                   saved.puzzleID == puzzleID,
@@ -58,15 +80,25 @@ public final class PuzzleChunkCoordinator {
             completed = Set(savedCompleted)
             activeOffset = savedOffset
             if let value = saved.activeIndex {
-                guard let index = U256(hex: value), index < chunks,
-                      !completed.contains(index) else { throw PuzzleChunkError.unreadableProgress }
-                activeIndex = index
-                let bounds = try self.bounds(for: index)
-                let chunkWidth = U256.addSmall(U256.subb(bounds.upper, bounds.lower).0, 1)
-                guard activeOffset < chunkWidth.0 else { throw PuzzleChunkError.unreadableProgress }
+                guard let index = U256(hex: value), index < chunks else {
+                    throw PuzzleChunkError.unreadableProgress
+                }
+                if completed.contains(index) {
+                    activeOffset = .zero
+                    activeIndex = nil
+                } else {
+                    activeIndex = index
+                    let bounds = try self.bounds(for: index)
+                    let chunkWidth = U256.addSmall(U256.subb(bounds.upper, bounds.lower).0, 1)
+                    guard activeOffset < chunkWidth.0 else {
+                        throw PuzzleChunkError.unreadableProgress
+                    }
+                }
             } else if !activeOffset.isZero {
                 throw PuzzleChunkError.unreadableProgress
             }
+            try writeJournal()
+            try persistCursor()
         }
     }
 
@@ -95,7 +127,7 @@ public final class PuzzleChunkCoordinator {
             let index = try chooseUncompletedIndex()
             activeIndex = index
             activeOffset = .zero
-            try persist()
+            try persistCursor()
         }
         guard let index = activeIndex else { return nil }
         let chunkBounds = try bounds(for: index)
@@ -107,7 +139,7 @@ public final class PuzzleChunkCoordinator {
     }
 
     /// Records exactly the number of keys returned by one completed GPU
-    /// dispatch. Partial progress is atomically saved after every dispatch.
+    /// dispatch. Partial progress is checkpointed at most every 30 seconds.
     @discardableResult
     public func recordScanned(_ count: UInt64) throws -> Bool {
         guard count > 0, let index = activeIndex else { return false }
@@ -120,11 +152,19 @@ public final class PuzzleChunkCoordinator {
         let didComplete = updated == width
         if didComplete {
             completed.insert(index)
+            try appendCompleted(index)
             activeIndex = nil
             activeOffset = .zero
+            try persistCursor()
+        } else if Date().timeIntervalSince(lastCursorSave) >= checkpointInterval {
+            try persistCursor()
         }
-        try persist()
         return didComplete
+    }
+
+    /// Flushes the active cursor when a search stops cleanly.
+    public func flushProgress() throws {
+        try persistCursor()
     }
 
     public var isComplete: Bool {
@@ -153,20 +193,91 @@ public final class PuzzleChunkCoordinator {
         return parsed.count == values.count ? parsed : nil
     }
 
-    private func persist() throws {
-        let snapshot = Snapshot(puzzleID: puzzleID,
-                                minimumHex: minimum.hexString,
-                                maximumHex: maximum.hexString,
-                                chunkSize: chunkSize,
-                                completed: completed.map(\.hexString).sorted(),
-                                activeIndex: activeIndex?.hexString,
-                                activeOffset: activeOffset.hexString)
+    private func persistCursor() throws {
+        let snapshot = Cursor(puzzleID: puzzleID,
+                              minimumHex: minimum.hexString,
+                              maximumHex: maximum.hexString,
+                              chunkSize: chunkSize,
+                              activeIndex: activeIndex?.hexString,
+                              activeOffset: activeOffset.hexString)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(snapshot)
-        try data.write(to: progressURL, options: .atomic)
+        try data.write(to: cursorURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: progressURL.path)
+                                               ofItemAtPath: cursorURL.path)
+        lastCursorSave = Date()
+    }
+
+    private func loadJournal() throws {
+        guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
+        let data: Data
+        do { data = try Data(contentsOf: journalURL) }
+        catch { throw PuzzleChunkError.unreadableProgress }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw PuzzleChunkError.unreadableProgress
+        }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        if !text.hasSuffix("\n"), !lines.isEmpty { lines.removeLast() }
+        for line in lines {
+            guard let index = U256(hex: String(line)), index < totalChunks else {
+                throw PuzzleChunkError.unreadableProgress
+            }
+            completed.insert(index)
+        }
+    }
+
+    private func loadCursor() throws {
+        guard FileManager.default.fileExists(atPath: cursorURL.path) else { return }
+        guard let data = try? Data(contentsOf: cursorURL),
+              let saved = try? JSONDecoder().decode(Cursor.self, from: data),
+              saved.puzzleID == puzzleID,
+              saved.minimumHex == minimum.hexString,
+              saved.maximumHex == maximum.hexString,
+              saved.chunkSize == chunkSize,
+              let offset = U256(hex: saved.activeOffset) else {
+            throw PuzzleChunkError.unreadableProgress
+        }
+        activeOffset = offset
+        if let value = saved.activeIndex {
+            guard let index = U256(hex: value), index < totalChunks else {
+                throw PuzzleChunkError.unreadableProgress
+            }
+            if completed.contains(index) {
+                activeOffset = .zero
+                activeIndex = nil
+                try persistCursor()
+                return
+            }
+            let bounds = try self.bounds(for: index)
+            let width = U256.addSmall(U256.subb(bounds.upper, bounds.lower).0, 1).0
+            guard offset < width else { throw PuzzleChunkError.unreadableProgress }
+            activeIndex = index
+        } else if !offset.isZero {
+            throw PuzzleChunkError.unreadableProgress
+        }
+    }
+
+    private func appendCompleted(_ index: U256) throws {
+        let line = Data((index.hexString + "\n").utf8)
+        if !FileManager.default.fileExists(atPath: journalURL.path) {
+            guard FileManager.default.createFile(atPath: journalURL.path, contents: nil,
+                                                  attributes: [.posixPermissions: 0o600]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+        let handle = try FileHandle(forWritingTo: journalURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: line)
+        try handle.synchronize()
+    }
+
+    private func writeJournal() throws {
+        let data = Data(completed.map(\.hexString).sorted().joined(separator: "\n").appending("\n").utf8)
+        try data.write(to: journalURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: journalURL.path)
     }
 
     private func bounds(for index: U256) throws -> (lower: U256, upper: U256) {

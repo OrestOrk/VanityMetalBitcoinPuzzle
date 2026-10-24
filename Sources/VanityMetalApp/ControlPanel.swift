@@ -12,6 +12,10 @@ struct TargetsCard: View {
     @ObservedObject var c: SearchController
     @State private var newTarget: String = ""
 
+    private var puzzleTargetLocked: Bool {
+        c.selectedBitcoinPuzzleID != nil && c.state != .idle
+    }
+
     var body: some View {
         Card(title: "Targets", accent: Neon.magenta, systemImage: "target",
              trailing: AnyView(Pill(text: "\(c.parsedTargets.count) ACTIVE", accent: Neon.magenta))) {
@@ -52,13 +56,15 @@ struct TargetsCard: View {
                         .overlay(RoundedRectangle(cornerRadius: 8)
                             .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
                         .onSubmit(addTarget)
+                        .disabled(puzzleTargetLocked)
 
                     Button(action: addTarget) {
                         Image(systemName: "plus").font(.system(size: 11, weight: .bold))
                     }
                     .buttonStyle(NeonButtonStyle(accent: Neon.magenta, compact: true))
                     .frame(width: 44)
-                    .disabled(newTarget.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(puzzleTargetLocked
+                              || newTarget.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 if let err = c.parseError {
@@ -107,6 +113,7 @@ struct TargetsCard: View {
     }
 
     private func addTarget() {
+        guard !puzzleTargetLocked else { return }
         let t = newTarget.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
         c.selectBitcoinPuzzle(nil)
@@ -118,6 +125,7 @@ struct TargetsCard: View {
 
 struct KeyRangeCard: View {
     @ObservedObject var c: SearchController
+    @State private var showingResetConfirmation = false
 
     var body: some View {
         Card(title: "Private key range", accent: Neon.amber, systemImage: "arrow.left.and.right") {
@@ -143,9 +151,23 @@ struct KeyRangeCard: View {
                     }
                     ProgressView(value: c.puzzleChunkProgress)
                         .tint(Neon.lime)
-                    Button("Reset saved puzzle progress") { c.resetSelectedPuzzleProgress() }
+                    Button("Reset saved puzzle progress") {
+                        showingResetConfirmation = true
+                    }
                         .buttonStyle(NeonButtonStyle(accent: Neon.rose, compact: true))
                         .disabled(c.state != .idle)
+                        .confirmationDialog(
+                            "Reset saved puzzle progress?",
+                            isPresented: $showingResetConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Reset Progress", role: .destructive) {
+                                c.resetSelectedPuzzleProgress()
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("This clears the saved chunks for the selected Bitcoin Puzzle. This cannot be undone.")
+                        }
                 } else {
                     rangeField("Minimum step", text: $c.keyMinimumStepText)
                     rangeField("Maximum step", text: $c.keyMaximumStepText)
@@ -203,6 +225,10 @@ private struct TargetRow: View {
     @ObservedObject var c: SearchController
     let index: Int
 
+    private var puzzleTargetLocked: Bool {
+        c.selectedBitcoinPuzzleID != nil && c.state != .idle
+    }
+
     var parsed: SearchTarget? {
         guard index < c.targetInputs.count else { return nil }
         return c.parsedTargets.first { $0.text == c.targetInputs[index] }
@@ -214,7 +240,7 @@ private struct TargetRow: View {
                 TextField("address or prefix", text: Binding(
                     get: { index < c.targetInputs.count ? c.targetInputs[index] : "" },
                     set: {
-                        if index < c.targetInputs.count {
+                        if !puzzleTargetLocked, index < c.targetInputs.count {
                             c.selectBitcoinPuzzle(nil)
                             c.targetInputs[index] = $0
                             c.refreshTargets()
@@ -227,9 +253,10 @@ private struct TargetRow: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.4)))
                     .overlay(RoundedRectangle(cornerRadius: 8)
                         .strokeBorder((parsed == nil ? Neon.rose : Neon.lime).opacity(0.5), lineWidth: 1))
+                    .disabled(puzzleTargetLocked)
 
                 Button {
-                    guard index < c.targetInputs.count else { return }
+                    guard !puzzleTargetLocked, index < c.targetInputs.count else { return }
                     c.selectBitcoinPuzzle(nil)
                     c.targetInputs.remove(at: index)
                     c.refreshTargets()
@@ -238,6 +265,7 @@ private struct TargetRow: View {
                 }
                 .buttonStyle(NeonButtonStyle(accent: Neon.rose, compact: true))
                 .frame(width: 34)
+                .disabled(puzzleTargetLocked)
             }
             if let p = parsed {
                 HStack(spacing: 6) {

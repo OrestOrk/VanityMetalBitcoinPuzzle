@@ -222,6 +222,7 @@ public final class SearchController: ObservableObject {
     public var bitcoinPuzzles: [BitcoinPuzzle] { BitcoinPuzzleCatalog.puzzles }
 
     public func selectBitcoinPuzzle(_ puzzleID: Int?) {
+        guard state == .idle else { return }
         selectedBitcoinPuzzleID = puzzleID
         guard let puzzleID,
               let puzzle = BitcoinPuzzleCatalog.puzzles.first(where: { $0.number == puzzleID }) else {
@@ -463,6 +464,13 @@ public final class SearchController: ObservableObject {
 
     private func runLoop(ranges: [HashRange], keyRange: KeySearchRange, deviceID: UInt64?,
                          gpuThreads: Int, puzzleID: Int? = nil, chunkSize: UInt64? = nil) {
+        // Keep macOS App Nap from throttling this user-started GPU workload
+        // when the window is inactive. The Mac may still sleep while idle.
+        let activity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Running the requested GPU search")
+        defer { ProcessInfo.processInfo.endActivity(activity) }
+
         var metalEngine: MetalEngine?
         var chunkCoordinator: PuzzleChunkCoordinator?
 

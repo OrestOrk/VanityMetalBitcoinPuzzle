@@ -101,6 +101,30 @@ active chunk cursor are saved in Application Support.
 Preset statuses come from a dated catalog snapshot; see
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for its source and licence.
 
+### Additions in this fork
+
+- **Bounded private-key search.** Set inclusive minimum and maximum keys in
+  hexadecimal. Choose a fixed stride or a minimum and maximum stride; when a
+  cycle reaches the end of the range, the next cycle returns to the minimum
+  and chooses a new stride within those limits.
+- **Bitcoin Puzzle presets and chunked progress.** Select a puzzle to load its
+  address and key bounds. The range is split into fixed-size chunks, an
+  unfinished chunk is selected at random, and keys inside that chunk are
+  checked sequentially. Completed chunks are recorded per puzzle and chunk
+  size; the active chunk resumes from its saved cursor. The progress bar shows
+  the active chunk's completion.
+- **Lower-write progress storage.** Completed chunk indices are appended to a
+  journal, while the active cursor is checkpointed about every 30 seconds and
+  on a clean stop. Existing JSON progress is migrated when first loaded.
+- **Safer puzzle controls.** Resetting saved progress asks for confirmation.
+  Puzzle targets and the puzzle selector are locked while a search is active.
+- **Menu-bar status.** The macOS menu bar shows live GPU throughput and the
+  number of found results. Its menu also shows search state and checked-key
+  count, with controls to start, pause, resume, stop, reopen, or quit the app.
+- **Background activity.** During a user-started search, the app tells macOS it
+  is performing active work to reduce App Nap throttling. This does not prevent
+  the Mac from sleeping while idle.
+
 ---
 
 ## How the search works

@@ -20,13 +20,11 @@ found in T2 Macs.
 no Python at runtime, no third-party Swift packages, no shell scripts to babysit.
 The Metal kernels are embedded in the binary and compiled at launch.
 
-![VanityMetal](Resources/screenshot.png)
+![VanityMetal with Bitcoin Puzzle #71 selected](Resources/screenshot.png)
 
-*Idle, on a 16-inch MacBook Pro with an AMD Radeon Pro 5500M. The difficulty
-card explains itself: Base58 prefixes are not uniform, so the figure shown is
-the true one rather than the usual 58ⁿ guess. The note under Found Keys is the
-guarantee the whole design rests on — every hit is re-derived and the address
-rebuilt on the CPU before it appears.*
+*Current fork interface with Bitcoin Puzzle #71 selected. The preset loads the
+published target address and key range; the telemetry panel is idle in this
+capture. The macOS menu-bar status item is separate from the app window.*
 
 ---
 
